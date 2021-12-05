@@ -21,7 +21,7 @@
   --------------------------------------------------------------------------------------------
   -------
   0.0.0.1 20211202  started - add 300 baud special case, use tcp nagle as option
-                              add (auto) RFC2217 support by Michael Rausch <mr@netadair.de>
+                              add (auto) RFC2217 support by Michael Rausch <mrvz@netadair.de>
                     forked  - from arendst/tasmota            - https://github.com/arendst/Tasmota
 */
 
@@ -149,7 +149,24 @@ void TCPLoop(void)
 
       for (uint32_t i=0; i<nitems(client_tcp); i++) {
         WiFiClient &client = client_tcp[i];
-        if (client) { client.write(tcp_buf, buf_len); }
+        if (!client) { continue; }
+        if (iac_level[i] < 0) { client.write(tcp_buf, buf_len); }
+        else { 
+          // telnet protocol active, scan for IAC in raw data stream, they need to be escaped.
+          // don't copy data, saves intermediate heap or stack
+          uint8_t *escape_buf = tcp_buf;
+          uint8_t iac_buf[] = { TELNET_IAC };
+          uint32_t j;
+          for (j=0; j<buf_len; j++) {
+            if( tcp_buf[j] == TELNET_IAC ) {
+              client.write(escape_buf, &tcp_buf[j+1] - escape_buf); 
+              client.write(iac_buf, 1);
+              escape_buf=&tcp_buf[j+1];
+            }
+          }
+          // nothing escaped, resp. remainder of the buffer
+          if( (&tcp_buf[j] - escape_buf) > 0) { client.write(escape_buf, &tcp_buf[j] - escape_buf); } 
+        }
       }
     }
 
@@ -265,10 +282,12 @@ void TCPLoop(void)
                   }
                 }
 
-                serial_config_rfc2217 = new_serialconfig;
-                TCPSerial->begin(new_baudrate, ConvertSerialConfig(new_serialconfig));  // Reinitialize serial port with new config
+                if( new_baudrate != GetSerialBaudrate() || new_serialconfig != serial_config_rfc2217 ) { // only if changed
+                  serial_config_rfc2217 = new_serialconfig;
+                  TCPSerial->begin(new_baudrate, ConvertSerialConfig(new_serialconfig));  // Reinitialize serial port with new config
 
-                AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_TCP "RFC2217 serial port set to %s %d bit/s"), GetSerialConfig(new_serialconfig).c_str(), (uint32_t)new_baudrate);
+                  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_TCP "RFC2217 serial port set to %s %d bit/s"), GetSerialConfig(new_serialconfig).c_str(), (uint32_t)new_baudrate);
+                }
 
                 iac_level[i] = 0;
                 continue;
@@ -293,7 +312,7 @@ void TCPLoop(void)
             break;
         }
 
-        if (1 || c >= 0) {
+        if (c >= 0) {
           tcp_buf[buf_len++] = c;
           busy = true;
         }
@@ -369,7 +388,7 @@ void CmndTCPStart(void) {
     }
   }
   if (tcp_port > 0) {
-    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_TCP "Starting TCP server on port %d, with TCP nodelay %sbled"), tcp_port, (tcp_no_delay?PSTR("en"):PSTR("dis")));
+    AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_TCP "Starting TCP server on port %d, with TCP nodelay %sbled"), tcp_port, (tcp_no_delay?PSTR("en"):PSTR("disa")));
     if (ip_filter) {
       AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_TCP "Filtering %s"), ip_filter.toString().c_str());
     }
